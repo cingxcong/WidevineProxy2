@@ -108,3 +108,13 @@ export class RemoteCdm {
         return key_request_json.data.keys;
     }
 }
+
+// Example usage with provided data
+const remoteCdm = RemoteCdm.from_object({
+    "device_type": "ANDROID",
+    "host": "https://remote-cdm.cdrm-project.com/remote_cdm",
+    "name": "TPD-Keys-API",
+    "secret": "TPD-Keys",
+    "security_level": 3,
+    "system_id": 4464
+});
