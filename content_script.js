@@ -1,266 +1,193 @@
-function uint8ArrayToBase64(uint8array) {
-    return btoa(String.fromCharCode.apply(null, uint8array));
-}
+(async () => {
+    const proxy = (object, method, handler) => {
+        const original = object[method];
+        if (typeof original !== "function")
+            return;
 
-function uint8ArrayToString(uint8array) {
-    return String.fromCharCode.apply(null, uint8array)
-}
-
-function base64toUint8Array(base64_string){
-    return Uint8Array.from(atob(base64_string), c => c.charCodeAt(0))
-}
-
-function compareUint8Arrays(arr1, arr2) {
-    if (arr1.length !== arr2.length)
-        return false;
-    return Array.from(arr1).every((value, index) => value === arr2[index]);
-}
-
-function emitAndWaitForResponse(type, data) {
-    return new Promise((resolve) => {
-        const requestId = Math.random().toString(16).substring(2, 9);
-        const responseHandler = (event) => {
-            const { detail } = event;
-            if (detail.substring(0, 7) === requestId) {
-                document.removeEventListener('responseReceived', responseHandler);
-                resolve(detail.substring(7));
-            }
-        };
-        document.addEventListener('responseReceived', responseHandler);
-        const requestEvent = new CustomEvent('response', {
-            detail: {
-                type: type,
-                body: data,
-                requestId: requestId,
-            }
+        Object.defineProperty(object, method, {
+            value: new Proxy(original, { apply: handler }),
+            configurable: true,
+            writable: true
         });
-        document.dispatchEvent(requestEvent);
-    });
-}
+    };
 
-const fnproxy = (object, func) => new Proxy(object, { apply: func });
-const proxy = (object, key, func) => Object.hasOwnProperty.call(object, key) && Object.defineProperty(object, key, {
-    value: fnproxy(object[key], func)
-});
+    const b64 = {
+        decode: s => Uint8Array.from(atob(s), c => c.charCodeAt(0)),
+        encode: b => btoa(String.fromCharCode(...new Uint8Array(b)))
+    };
 
-function getEventListeners(type) {
-    if (this == null) return [];
-    const store = this[Symbol.for(getEventListeners)];
-    if (store == null || store[type] == null) return [];
-    return store[type];
-}
-
-class Evaluator {
-    static isDASH(text) {
-        return text.includes('<mpd') && text.includes('</mpd>');
-    }
-
-    static isHLS(text) {
-        return text.includes('#extm3u');
-    }
-
-    static isHLSMaster(text) {
-        return text.includes('#ext-x-stream-inf');
-    }
-
-    static isMSS(text) {
-        return text.includes('<smoothstreamingmedia') && text.includes('</smoothstreamingmedia>');
-    }
-
-    static getManifestType(text) {
+    const getManifestType = (text) => {
         const lower = text.toLowerCase();
-        if (this.isDASH(lower)) {
+        if (lower.includes('<mpd') && lower.includes('</mpd>')) {
             return "DASH";
-        } else if (this.isHLS(lower)) {
-            if (this.isHLSMaster(lower)) {
+        } else if (lower.includes('#extm3u')) {
+            if (lower.includes('#ext-x-stream-inf')) {
                 return "HLS_MASTER";
             } else {
                 return "HLS_PLAYLIST";
             }
-        } else if (this.isMSS(lower)) {
+        } else if (lower.includes('<smoothstreamingmedia') && lower.includes('</smoothstreamingmedia>')) {
             return "MSS";
         }
     }
-}
 
-(async () => {
+    function emitAndWaitForResponse(type, data) {
+        return new Promise((resolve) => {
+            const requestId = Math.random().toString(16).substring(2, 9);
+            const responseHandler = (event) => {
+                const { detail } = event;
+                if (detail.substring(0, 7) === requestId) {
+                    document.removeEventListener('responseReceived', responseHandler);
+                    resolve(detail.substring(7));
+                }
+            };
+            document.addEventListener('responseReceived', responseHandler);
+            const requestEvent = new CustomEvent('response', {
+                detail: {
+                    type: type,
+                    body: data,
+                    requestId: requestId,
+                }
+            });
+            document.dispatchEvent(requestEvent);
+        });
+    }
+
     if (typeof EventTarget !== 'undefined') {
-        proxy(EventTarget.prototype, 'addEventListener', async (_target, _this, _args) => {
-            if (_this != null) {
-                const [type, listener] = _args;
+        proxy(EventTarget.prototype, 'addEventListener', (target, thisArg, args) => {
+            const [type, listener] = args;
 
-                const storeKey = Symbol.for(getEventListeners);
-                if (!(storeKey in _this)) _this[storeKey] = {};
-
-                const store = _this[storeKey];
-                if (!(type in store)) store[type] = [];
-                const listeners = store[type];
-
-                let wrappedListener = listener;
-                if (type === "message" && !!listener && !listener._isWrapped && (typeof MediaKeyMessageEvent !== 'undefined')) {
-                    wrappedListener = async function(event) {
-                        if (event instanceof MediaKeyMessageEvent) {
-                            if (event._isCustomEvent) {
-                                if (listener.handleEvent) {
-                                    listener.handleEvent(event);
-                                } else {
-                                    listener.call(this, event);
-                                }
-                                return;
-                            }
-
-                            let newBody = new Uint8Array(event.message);
-                            if (!compareUint8Arrays(new Uint8Array([0x08, 0x04]), new Uint8Array(event.message))) {
-                                console.log("[WidevineProxy2]", "WIDEVINE_PROXY", "MESSAGE", listener);
-                                if (listener.name !== "messageHandler") {
-                                    const oldChallenge = uint8ArrayToBase64(new Uint8Array(event.message));
-                                    const newChallenge = await emitAndWaitForResponse("REQUEST", oldChallenge);
-                                    if (oldChallenge !== newChallenge) {
-                                        // Playback will fail if the challenges are the same (aka. the background script
-                                        // returned the same challenge because the addon is disabled), but I still
-                                        // override the challenge anyway, so check beforehand (in base64 form)
-                                        newBody = base64toUint8Array(newChallenge);
-                                    }
-                                } else {
-                                    // trick EME Logger
-                                    // better suggestions for avoiding EME Logger interference are welcome
-                                    await emitAndWaitForResponse("REQUEST", "");
-                                }
-                            }
-
-                            const newEvent = new MediaKeyMessageEvent('message', {
-                                isTrusted: event.isTrusted,
-                                bubbles: event.bubbles,
-                                cancelBubble: event.cancelBubble,
-                                composed: event.composed,
-                                currentTarget: event.currentTarget,
-                                defaultPrevented: event.defaultPrevented,
-                                eventPhase: event.eventPhase,
-                                message: newBody.buffer,
-                                messageType: event.messageType,
-                                returnValue: event.returnValue,
-                                srcElement: event.srcElement,
-                                target: event.target,
-                                timeStamp: event.timeStamp,
-                            });
-                            newEvent._isCustomEvent = true;
-
-                            _this.dispatchEvent(newEvent);
-                            event.stopImmediatePropagation();
-                            return
-                        }
-
-                        if (listener.handleEvent) {
-                            listener.handleEvent(event);
-                        } else {
-                            listener.call(this, event);
-                        }
-                    };
-
-                    wrappedListener._isWrapped = true;
-                    wrappedListener.originalListener = listener;
-                }
-
-                const alreadyAdded = listeners.some(
-                    storedListener => storedListener && storedListener.originalListener === listener
-                );
-
-                if (!alreadyAdded) {
-                    listeners.push(wrappedListener);
-                    _args[1] = wrappedListener;
-                }
+            if (thisArg == null || !(thisArg instanceof MediaKeySession) || typeof MediaKeyMessageEvent === 'undefined' || type !== "message" || !listener) {
+                return target.apply(thisArg, args);
             }
-            return _target.apply(_this, _args);
+
+            args[1] = async function(event) {
+                if (event instanceof MediaKeyMessageEvent && event.isTrusted && event.message.byteLength > 2) {
+                    const oldChallenge = b64.encode(event.message);
+                    const newChallenge = await emitAndWaitForResponse("REQUEST", oldChallenge);
+
+                    const clonedEvent = new MediaKeyMessageEvent("message", {
+                        messageType: event.messageType,
+                        message: b64.decode(newChallenge).buffer
+                    });
+
+                    event.stopImmediatePropagation();
+                    event.preventDefault();
+
+                    thisArg.dispatchEvent(clonedEvent);
+                    return;
+                }
+
+                if (listener.handleEvent) {
+                    listener.handleEvent.call(listener, event);
+                } else {
+                    listener.call(this, event);
+                }
+            };
+
+            return target.apply(thisArg, args);
         });
     }
 
     if (typeof MediaKeySession !== 'undefined') {
-        proxy(MediaKeySession.prototype, 'update', async (_target, _this, _args) => {
-            const [response] = _args;
-            console.log("[WidevineProxy2]", "WIDEVINE_PROXY", "UPDATE");
-            await emitAndWaitForResponse("RESPONSE", uint8ArrayToBase64(new Uint8Array(response)))
-            return await _target.apply(_this, _args);
+        proxy(MediaKeySession.prototype, 'update', async (target, thisArg, args) => {
+            if (thisArg == null || !(thisArg instanceof MediaKeySession)) {
+                return target.apply(thisArg, args);
+            }
+
+            await emitAndWaitForResponse("RESPONSE", b64.encode(args[0]))
+
+            return await target.apply(thisArg, args);
         });
     }
-})();
 
-const originalFetch = window.fetch;
-window.fetch = function() {
-    return new Promise(async (resolve, reject) => {
-        originalFetch.apply(this, arguments).then((response) => {
-            if (response) {
-                response.clone().text().then((text) => {
-                    const manifest_type = Evaluator.getManifestType(text);
-                    if (manifest_type) {
-                        if (arguments.length === 1) {
-                            emitAndWaitForResponse("MANIFEST", JSON.stringify({
-                                "url": arguments[0].url,
-                                "type": manifest_type,
-                            }));
-                        } else if (arguments.length === 2) {
-                            emitAndWaitForResponse("MANIFEST", JSON.stringify({
-                                "url": arguments[0],
-                                "type": manifest_type,
-                            }));
-                        }
-                    }
-                    resolve(response);
-                }).catch(() => {
-                    resolve(response);
-                })
-            } else {
-                resolve(response);
+    proxy(XMLHttpRequest.prototype,  "open", (target, thisArg, args) => {
+        const [method, url] = args;
+
+        thisArg.requestMethod = method.toUpperCase();
+        thisArg.requestURL = url;
+
+        return target.apply(thisArg, args);
+    });
+
+    proxy(XMLHttpRequest.prototype, "send", (target, thisArg, args) => {
+        thisArg.addEventListener("readystatechange", async () => {
+            if (thisArg.requestMethod !== "GET" || thisArg.readyState !== 4) {
+                return;
             }
-        }).catch(() => {
-            resolve();
-        })
-    })
-}
 
-const open = XMLHttpRequest.prototype.open;
-XMLHttpRequest.prototype.open = function(method, url) {
-    this._method = method;
-    return open.apply(this, arguments);
-};
-
-const send = XMLHttpRequest.prototype.send;
-XMLHttpRequest.prototype.send = function(postData) {
-    this.addEventListener('load', async function() {
-        if (this._method === "GET") {
-            let body = void 0;
-            switch (this.responseType) {
+            let body = null;
+            switch (thisArg.responseType) {
                 case "":
                 case "text":
-                    body = this.responseText ?? this.response;
+                    body = thisArg.responseText ?? thisArg.response;
                     break;
+
                 case "json":
-                    // TODO: untested
-                    body = JSON.stringify(this.response);
+                    body = typeof thisArg.response === 'string' ? thisArg.response : JSON.stringify(thisArg.response);
                     break;
+
                 case "arraybuffer":
-                    // TODO: untested
-                    if (this.response.byteLength) {
-                        const response = new Uint8Array(this.response);
-                        body = uint8ArrayToString(new Uint8Array([...response.slice(0, 2000), ...response.slice(-2000)]));
+                    if (thisArg.response && thisArg.response.byteLength > 0 && thisArg.response.byteLength < 1_000_000) {
+                        const arr = new Uint8Array(thisArg.response);
+                        const decoder = new TextDecoder('utf-8', { fatal: false });
+                        body = arr.length <= 2000
+                            ? decoder.decode(arr)
+                            : decoder.decode(arr.slice(0, 1000)) + decoder.decode(arr.slice(-1000));
                     }
                     break;
-                case "document":
-                    // todo
-                    break;
+
                 case "blob":
-                    body = await this.response.text();
+                    if (thisArg.response.type.startsWith('text/') || thisArg.response.type.includes('xml') || thisArg.response.type.includes('json') || thisArg.response.size < 100_000) {
+                        body = await thisArg.response.text();
+                    }
+                    break;
+
+                case "document":
+                    if (thisArg.response?.documentElement) {
+                        body = new XMLSerializer().serializeToString(thisArg.response);
+                    }
                     break;
             }
+
             if (body) {
-                const manifest_type = Evaluator.getManifestType(body);
+                const manifest_type = getManifestType(body);
                 if (manifest_type) {
-                    emitAndWaitForResponse("MANIFEST", JSON.stringify({
-                        "url": this.responseURL,
-                        "type": manifest_type,
+                    console.log("WVP2 FOUND MANIFEST", manifest_type, thisArg.responseURL);
+                    await emitAndWaitForResponse("MANIFEST", JSON.stringify({
+                        url: thisArg.responseURL,
+                        type: manifest_type,
                     }));
                 }
             }
-        }
+        });
+
+        return target.apply(thisArg, args);
     });
-    return send.apply(this, arguments);
-};
+
+    proxy(window, "fetch", async (target, thisArg, args) => {
+        const response = await target.apply(thisArg, args);
+
+        try {
+            if (response) {
+                const text = await response.clone().text();
+                const manifest_type = getManifestType(text);
+
+                if (manifest_type) {
+                    const url = typeof args[0] === "string" ? args[0] : args[0]?.url;
+
+                    if (url) {
+                        await emitAndWaitForResponse("MANIFEST", JSON.stringify({
+                            url,
+                            type: manifest_type
+                        }));
+                    }
+                }
+            }
+        } catch (err) {
+            console.debug("Manifest intercept failed:", err);
+        }
+
+        return response;
+    });
+})();

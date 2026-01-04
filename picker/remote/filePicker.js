@@ -1,6 +1,4 @@
-import "../../protobuf.min.js";
-import "../../license_protocol.js";
-import { SettingsManager } from "../../util.js";
+import { SettingsManager } from "../../lib/util.js";
 
 document.getElementById('fileInput').addEventListener('change', async (event) => {
     const file = event.target.files[0];

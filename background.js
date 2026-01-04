@@ -1,20 +1,14 @@
-import "./protobuf.min.js";
-import "./license_protocol.js";
-import "./forge.min.js";
-
-import { Session } from "./license.js";
-import {
-    DeviceManager,
-    base64toUint8Array,
-    uint8ArrayToBase64,
-    uint8ArrayToHex,
-    SettingsManager,
-    AsyncLocalStorage, RemoteCDMManager
-} from "./util.js";
-import { WidevineDevice } from "./device.js";
-import { RemoteCdm } from "./remote_cdm.js";
-
+import "./lib/protobuf.min.js";
+import "./lib/license_protocol.min.js";
 const { LicenseType, SignedMessage, LicenseRequest, License } = protobuf.roots.default.license_protocol;
+
+import "./lib/forge.min.js";
+
+import { Session } from "./lib/cdm.js";
+import { DeviceManager, SettingsManager, AsyncLocalStorage, RemoteCDMManager, Util } from "./lib/util.js";
+import { WidevineDevice } from "./lib/device.js";
+import { RemoteCdm } from "./lib/remote_cdm.js";
+
 
 let manifests = new Map();
 let requests = new Map();
@@ -36,7 +30,6 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
                         acc[item.name] = item.value;
                         return acc;
                     }, {});
-                console.log(headers);
                 requests.set(details.url, headers);
             }
         }
@@ -50,8 +43,8 @@ async function parseClearKey(body, sendResponse, tab_url) {
 
     const formatted_keys = clearkey["keys"].map(key => ({
         ...key,
-        kid: uint8ArrayToHex(base64toUint8Array(key.kid.replace(/-/g, "+").replace(/_/g, "/") + "==")),
-        k: uint8ArrayToHex(base64toUint8Array(key.k.replace(/-/g, "+").replace(/_/g, "/") + "=="))
+        kid: Util.bytesToHex(Util.b64.decode(key.kid.replace(/-/g, "+").replace(/_/g, "/") + "==")),
+        k: Util.bytesToHex(Util.b64.decode(key.k.replace(/-/g, "+").replace(/_/g, "/") + "=="))
     }));
     const pssh_data = btoa(JSON.stringify({kids: clearkey["keys"].map(key => key.k)}));
 
@@ -77,7 +70,7 @@ async function parseClearKey(body, sendResponse, tab_url) {
 }
 
 async function generateChallenge(body, sendResponse) {
-    const signed_message =  SignedMessage.decode(base64toUint8Array(body));
+    const signed_message =  SignedMessage.decode(Util.b64.decode(body));
     const license_request = LicenseRequest.decode(signed_message.msg);
     const pssh_data = license_request.contentId.widevinePsshData.psshData[0];
 
@@ -88,7 +81,7 @@ async function generateChallenge(body, sendResponse) {
     }
 
     if (logs.filter(log => log.pssh_data === Session.psshDataToPsshBoxB64(pssh_data)).length > 0) {
-        console.log("[WidevineProxy2]", `KEYS_ALREADY_RETRIEVED: ${uint8ArrayToBase64(pssh_data)}`);
+        console.log("[WidevineProxy2]", `KEYS_ALREADY_RETRIEVED: ${Util.b64.encode(pssh_data)}`);
         sendResponse(body);
         return;
     }
@@ -100,9 +93,9 @@ async function generateChallenge(body, sendResponse) {
     }
 
     const device_b64 = await DeviceManager.loadWidevineDevice(selected_device_name);
-    const widevine_device = new WidevineDevice(base64toUint8Array(device_b64).buffer);
+    const widevine_device = new WidevineDevice(Util.b64.decode(device_b64).buffer);
 
-    const private_key = `-----BEGIN RSA PRIVATE KEY-----${uint8ArrayToBase64(widevine_device.private_key)}-----END RSA PRIVATE KEY-----`;
+    const private_key = `-----BEGIN RSA PRIVATE KEY-----${Util.b64.encode(widevine_device.private_key)}-----END RSA PRIVATE KEY-----`;
     const session = new Session(
         {
             privateKey: private_key,
@@ -112,23 +105,22 @@ async function generateChallenge(body, sendResponse) {
     );
 
     const [challenge, request_id] = session.createLicenseRequest(LicenseType.STREAMING, widevine_device.type === 2);
-    sessions.set(uint8ArrayToBase64(request_id), session);
+    sessions.set(Util.b64.encode(request_id), session);
 
-    sendResponse(uint8ArrayToBase64(challenge));
+    sendResponse(Util.b64.encode(challenge));
 }
 
 async function parseLicense(body, sendResponse, tab_url) {
-    const license = base64toUint8Array(body);
+    const license = Util.b64.decode(body);
     const signed_license_message = SignedMessage.decode(license);
 
     if (signed_license_message.type !== SignedMessage.MessageType.LICENSE) {
-        console.log("[WidevineProxy2]", "INVALID_MESSAGE_TYPE", signed_license_message.type.toString());
         sendResponse();
         return;
     }
 
     const license_obj = License.decode(signed_license_message.msg);
-    const loaded_request_id = uint8ArrayToBase64(license_obj.id.requestId);
+    const loaded_request_id = Util.b64.encode(license_obj.id.requestId);
 
     if (!sessions.has(loaded_request_id)) {
         sendResponse();
@@ -156,7 +148,7 @@ async function parseLicense(body, sendResponse, tab_url) {
 }
 
 async function generateChallengeRemote(body, sendResponse) {
-    const signed_message =  SignedMessage.decode(base64toUint8Array(body));
+    const signed_message =  SignedMessage.decode(Util.b64.decode(body));
     const license_request = LicenseRequest.decode(signed_message.msg);
     const pssh_data = license_request.contentId.widevinePsshData.psshData[0];
 
@@ -169,7 +161,7 @@ async function generateChallengeRemote(body, sendResponse) {
     const pssh = Session.psshDataToPsshBoxB64(pssh_data);
 
     if (logs.filter(log => log.pssh_data === pssh).length > 0) {
-        console.log("[WidevineProxy2]", `KEYS_ALREADY_RETRIEVED: ${uint8ArrayToBase64(pssh_data)}`);
+        console.log("[WidevineProxy2]", `KEYS_ALREADY_RETRIEVED: ${Util.b64.encode(pssh_data)}`);
         sendResponse(body);
         return;
     }
@@ -186,10 +178,10 @@ async function generateChallengeRemote(body, sendResponse) {
     const session_id = await remote_cdm.open();
     const challenge_b64 = await remote_cdm.get_license_challenge(session_id, pssh, true);
 
-    const signed_challenge_message = SignedMessage.decode(base64toUint8Array(challenge_b64));
+    const signed_challenge_message = SignedMessage.decode(Util.b64.decode(challenge_b64));
     const challenge_message = LicenseRequest.decode(signed_challenge_message.msg);
 
-    sessions.set(uint8ArrayToBase64(challenge_message.contentId.widevinePsshData.requestId), {
+    sessions.set(Util.b64.encode(challenge_message.contentId.widevinePsshData.requestId), {
         id: session_id,
         pssh: pssh
     });
@@ -197,17 +189,16 @@ async function generateChallengeRemote(body, sendResponse) {
 }
 
 async function parseLicenseRemote(body, sendResponse, tab_url) {
-    const license = base64toUint8Array(body);
+    const license = Util.b64.decode(body);
     const signed_license_message = SignedMessage.decode(license);
 
     if (signed_license_message.type !== SignedMessage.MessageType.LICENSE) {
-        console.log("[WidevineProxy2]", "INVALID_MESSAGE_TYPE", signed_license_message.type.toString());
         sendResponse();
         return;
     }
 
     const license_obj = License.decode(signed_license_message.msg);
-    const loaded_request_id = uint8ArrayToBase64(license_obj.id.requestId);
+    const loaded_request_id = Util.b64.encode(license_obj.id.requestId);
 
     if (!sessions.has(loaded_request_id)) {
         sendResponse();
@@ -316,6 +307,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     height: 200,
                 });
                 break;
+            case "OPEN_PICKER_WVD_MOBILE":
+                chrome.tabs.create({
+                    url: chrome.runtime.getURL("picker/wvd/filePicker.html")
+                });
+                break;
             case "OPEN_PICKER_REMOTE":
                 chrome.windows.create({
                     url: 'picker/remote/filePicker.html',
@@ -324,9 +320,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     height: 200,
                 });
                 break;
+            case "OPEN_PICKER_REMOTE_MOBILE":
+                chrome.tabs.create({
+                    url: chrome.runtime.getURL("picker/remote/filePicker.html")
+                });
+                break;
             case "CLEAR":
                 logs = [];
-                manifests.clear()
+                manifests.clear();
                 break;
             case "MANIFEST":
                 const parsed = JSON.parse(message.body);

@@ -1,6 +1,4 @@
-import "../protobuf.min.js";
-import "../license_protocol.js";
-import {AsyncLocalStorage, base64toUint8Array, stringToUint8Array, DeviceManager, RemoteCDMManager, SettingsManager} from "../util.js";
+import { AsyncLocalStorage, DeviceManager, RemoteCDMManager, SettingsManager, Util } from "../lib/util.js";
 
 const key_container = document.getElementById('key-container');
 
@@ -12,7 +10,7 @@ enabled.addEventListener('change', async function (){
 
 const toggle = document.getElementById('darkModeToggle');
 toggle.addEventListener('change', async () => {
-    await SettingsManager.setDarkMode(toggle.checked);
+    SettingsManager.setDarkMode(toggle.checked);
     await SettingsManager.saveDarkMode(toggle.checked);
 });
 
@@ -30,16 +28,26 @@ remote_select.addEventListener('change', async function (){
     }
 });
 
-const export_button = document.getElementById('export');
+const export_button = document.getElementById('exportLogs');
 export_button.addEventListener('click', async function() {
     const logs = await AsyncLocalStorage.getStorage(null);
-    SettingsManager.downloadFile(stringToUint8Array(JSON.stringify(logs)), "logs.json");
+    SettingsManager.downloadFile(new Blob([JSON.stringify(logs)], { type: "application/json;charset=utf-8" }), "logs.json");
+});
+
+const clear_logs = document.getElementById('clearLogs');
+clear_logs.addEventListener('click', function() {
+    AsyncLocalStorage.clearStorage();
 });
 // ======================================
 
 // ================ Widevine Device ================
-document.getElementById('fileInput').addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: "OPEN_PICKER_WVD" });
+const fileInput = document.getElementById('fileInput');
+fileInput.addEventListener('click', () => {
+    if ("ontouchstart" in window || navigator.maxTouchPoints > 0) {
+        chrome.runtime.sendMessage({ type: "OPEN_PICKER_WVD_MOBILE" });
+    } else {
+        chrome.runtime.sendMessage({ type: "OPEN_PICKER_WVD" });
+    }
     window.close();
 });
 
@@ -60,7 +68,7 @@ const download = document.getElementById('download');
 download.addEventListener('click', async function() {
     const widevine_device = await DeviceManager.getSelectedWidevineDevice();
     SettingsManager.downloadFile(
-        base64toUint8Array(await DeviceManager.loadWidevineDevice(widevine_device)),
+        Util.b64.decode(await DeviceManager.loadWidevineDevice(widevine_device)),
         widevine_device + ".wvd"
     )
 });
@@ -73,7 +81,11 @@ wvd_combobox.addEventListener('change', async function() {
 
 // ================ Remote CDM ================
 document.getElementById('remoteInput').addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: "OPEN_PICKER_REMOTE" });
+    if ("ontouchstart" in window || navigator.maxTouchPoints > 0) {
+        chrome.runtime.sendMessage({ type: "OPEN_PICKER_REMOTE_MOBILE" });
+    } else {
+        chrome.runtime.sendMessage({ type: "OPEN_PICKER_REMOTE" });
+    }
     window.close();
 });
 
@@ -112,9 +124,13 @@ use_shaka.addEventListener('change', async function (){
 });
 
 const downloader_name = document.getElementById('downloader-name');
-downloader_name.addEventListener('input', async function (event){
-    console.log("input change", event);
+downloader_name.addEventListener('input', async function (){
     await SettingsManager.saveExecutableName(downloader_name.value);
+});
+
+const downloader_args = document.getElementById('downloader-args');
+downloader_args.addEventListener('input', async function (){
+    await SettingsManager.saveAdditionalArguments(downloader_args.value);
 });
 // =================================================
 
@@ -127,8 +143,11 @@ clear.addEventListener('click', async function() {
 
 async function createCommand(json, key_string) {
     const metadata = JSON.parse(json);
-    const header_string = Object.entries(metadata.headers).map(([key, value]) => `-H "${key}: ${value.replace(/"/g, "'")}"`).join(' ');
-    return `${await SettingsManager.getExecutableName()} "${metadata.url}" ${header_string} ${key_string} ${await SettingsManager.getUseShakaPackager() ? "--use-shaka-packager " : ""}-M format=mkv`;
+    const headerString = Object.entries(metadata.headers).map(([key, value]) => `-H "${key}: ${value.replace(/"/g, "'")}"`).join(' ');
+    const executableName = await SettingsManager.getExecutableName();
+    const useShaka = await SettingsManager.getUseShakaPackager();
+    const additionalArgs = await SettingsManager.getAdditionalArguments();
+    return `${executableName} "${metadata.url}" ${headerString} ${key_string} ${useShaka ? "--use-shaka-packager " : ""}${additionalArgs}`;
 }
 
 async function appendLog(result) {
@@ -231,7 +250,8 @@ document.addEventListener('DOMContentLoaded', async function () {
     SettingsManager.setDarkMode(await SettingsManager.getDarkMode());
     use_shaka.checked = await SettingsManager.getUseShakaPackager();
     downloader_name.value = await SettingsManager.getExecutableName();
-    await SettingsManager.setSelectedDeviceType(await SettingsManager.getSelectedDeviceType());
+    downloader_args.value = await SettingsManager.getAdditionalArguments();
+    SettingsManager.setSelectedDeviceType(await SettingsManager.getSelectedDeviceType());
     await DeviceManager.loadSetAllWidevineDevices();
     await DeviceManager.selectWidevineDevice(await DeviceManager.getSelectedWidevineDevice());
     await RemoteCDMManager.loadSetAllRemoteCDMs();
