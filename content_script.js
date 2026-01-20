@@ -57,7 +57,7 @@
         proxy(EventTarget.prototype, 'addEventListener', (target, thisArg, args) => {
             const [type, listener] = args;
 
-            if (thisArg == null || !(thisArg instanceof MediaKeySession) || typeof MediaKeyMessageEvent === 'undefined' || type !== "message" || !listener) {
+            if (thisArg == null || typeof MediaKeySession === 'undefined' || !(thisArg instanceof MediaKeySession) || typeof MediaKeyMessageEvent === 'undefined' || type !== "message" || !listener) {
                 return target.apply(thisArg, args);
             }
 
